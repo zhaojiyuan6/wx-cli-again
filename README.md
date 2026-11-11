@@ -160,10 +160,26 @@ sudo wx key extract --hook-seconds 90
 sudo wx init
 ```
 
-**Windows**（以管理员身份运行 PowerShell）
+**Windows**（建议以管理员身份运行 PowerShell，需能读取微信进程内存）
 
 ```powershell
 wx init
+```
+
+`wx init` / `wx key extract` 在 Windows 上按三步取钥，前一步配齐就不走后面：
+
+1. **运行时 `Config.Cipher`（主路径，推荐）**：只读打开 `Weixin.exe` 内存，解析 WCDB 的
+   `Config.Cipher` 缓存对象取出每个库的 32 字节 key，再用数据库首页 HMAC 校验。
+   微信 **4.1.11+ / 4.2+ 通用**，不需要 Frida、不注入、不暂停微信、不依赖版本特征码。
+2. **内存候选扫描（回退）**：`x'<key><salt>'` 字面量 + 堆上 key/salt 邻接。
+3. **Frida hook（兜底，仅 4.1.x 特征码有效）**：4.2+ 会自动跳过并提示更新特征码，
+   不会白等满 90s。
+
+只有走到第 3 步才需要 Python 3 + `pip install frida`；hook 期间请保持微信运行并打开/滚动聊天：
+
+```powershell
+pip install frida
+wx key extract --hook-seconds 90
 ```
 
 ### 验证
@@ -194,12 +210,12 @@ wx doctor
 wx doctor                                 # 环境 / 密钥 / 分片检查
 wx doctor --fix --json                   # JSON + 修复建议
 wx key list                               # 已有密钥与缺失覆盖
-wx key extract --hook-seconds 90          # 建议：sudo wx key extract --hook-seconds 90
+wx key extract --hook-seconds 90          # macOS 前置 sudo；Windows 需 pip install frida
 wx key set message/message_1.db <64hex>   # 手动写入并校验
 ```
 
-补密钥统一用 **`sudo wx key extract --hook-seconds 90`**（不要用裸的 `wx init --force` 当主路径）。  
-取钥**不需要关闭 SIP**；需本机 GUI Terminal +（Hardened Runtime 包）sudo。
+补密钥统一用 **`wx key extract --hook-seconds 90`**（macOS 加 `sudo`；不要用裸的 `wx init --force` 当主路径）。  
+取钥**不需要关闭 SIP**；macOS 需本机 GUI Terminal +（Hardened Runtime 包）sudo；Windows 需 Frida（`pip install frida`）。
 
 ### 消息
 
@@ -396,10 +412,12 @@ daemon 首次解密后将数据库和 mtime 持久化到 `~/.wx-cli/cache/`。�
 
 ## 原理
 
-微信 4.x 使用 SQLCipher 4 加密本地数据库（AES-256-CBC + HMAC-SHA512，页级 raw key）。每个 DB 有独立的 32-byte AES key；密钥在微信进程打开 DB 时出现在内存中。
+微信 4.x 使用 SQLCipher 4 加密本地数据库（AES-256-CBC + HMAC-SHA512，页级 raw key）。每个 DB 有独立的 32-byte AES key；key 在微信打开 DB、执行页加解密时出现。
 
-- **首次**：`sudo wx init` — 内存扫描（`x'key+salt'` + salt 邻接）+ 可选 LLDB hook，写入 `~/.wx-cli/all_keys.json`
-- **补齐 / 新分片**：`sudo wx key extract --hook-seconds 90`（与 `init --force` 等价，是产品推荐命令）
+- **首次**：`wx init`（macOS 加 `sudo`）— 内存扫描（`x'key+salt'` + salt 邻接）+ hook 补齐，写入 `~/.wx-cli/all_keys.json`
+  - macOS：LLDB hook `CCCryptorCreate`
+  - Windows：读取运行时 `Config.Cipher` 对象（4.1.11+ / 4.2+ 主路径，只读、无需注入）；Frida hook 仅作 4.1.x 兜底
+- **补齐 / 新分片**：`wx key extract --hook-seconds 90`（与 `init --force` 等价，是产品推荐命令）
 
 之后 daemon **优先 SQLCipher 在线打开**加密库（无需全量预解密）；必要时才解密到 `~/.wx-cli/cache/` 并按 mtime / WAL 增量更新。
 
@@ -411,7 +429,7 @@ macOS 取钥依赖本机 Terminal 的 `task_for_pid` / 调试能力，**与是�
 
 | 问题 | 处理 |
 |------|------|
-| `meta.unknown_shards` / doctor 缺关键分片 | `sudo wx key extract --hook-seconds 90`，等待时打开相关聊天 |
+| `meta.unknown_shards` / doctor 缺关键分片 | `wx key extract`（macOS 加 `sudo`；Windows 走 Config.Cipher 主路径，一般无需 Frida），等待时打开相关聊天 |
 | `wx --version` 偏旧 | `git pull && cargo build --release && cp target/release/wx ~/.local/bin/wx` |
 | 是否必须关 SIP？ | **否** |
 | 是否必须 ad-hoc 重签微信？ | **默认否**；仅 SSH/无 GUI 且 attach 失败时考虑 |

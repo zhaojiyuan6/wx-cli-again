@@ -201,6 +201,15 @@ pub fn cmd_init(force: bool, hook_seconds: Option<u64>) -> Result<()> {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        println!();
+        println!("[Windows] 说明：");
+        println!("  · 主路径：只读解析微信运行时的 Config.Cipher 对象（不注入、不需要 Frida）。");
+        println!("  · 只有主路径仍缺密钥时才回退到 Frida hook（需 pip install frida）；");
+        println!("    hook 期间请保持微信运行，并打开/滚动聊天以触发冷分片解密。");
+    }
+
     Ok(())
 }
 

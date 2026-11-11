@@ -4,11 +4,23 @@ use std::path::{Path, PathBuf};
 
 /// 产品统一推荐：补齐/重提数据库密钥（含冷分片 hook）。
 /// 所有用户可见错误/警告应指向此命令，避免 `init --force` 与 `key extract` 分叉。
+#[cfg(target_os = "macos")]
 pub const RECOMMENDED_KEY_EXTRACT: &str = "sudo wx key extract --hook-seconds 90";
+#[cfg(target_os = "linux")]
+pub const RECOMMENDED_KEY_EXTRACT: &str = "wx key extract";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub const RECOMMENDED_KEY_EXTRACT: &str = "wx key extract --hook-seconds 90";
 
 /// 带冷分片操作说明的完整提示（一行或多行均可嵌入）。
+#[cfg(target_os = "macos")]
 pub const RECOMMENDED_KEY_EXTRACT_HINT: &str =
     "sudo wx key extract --hook-seconds 90（等待期间在微信中打开相关聊天以捕获冷分片密钥）";
+#[cfg(target_os = "linux")]
+pub const RECOMMENDED_KEY_EXTRACT_HINT: &str =
+    "wx key extract（需有读取微信进程内存的权限）";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub const RECOMMENDED_KEY_EXTRACT_HINT: &str =
+    "wx key extract --hook-seconds 90（等待期间在微信中打开相关聊天以捕获冷分片密钥）";
 
 #[cfg(test)]
 mod recommended_cmd_tests {
@@ -16,11 +28,14 @@ mod recommended_cmd_tests {
 
     #[test]
     fn recommended_key_extract_is_key_cmd_with_hook() {
-        assert!(RECOMMENDED_KEY_EXTRACT.starts_with("sudo wx key extract"));
+        let bare = RECOMMENDED_KEY_EXTRACT
+            .strip_prefix("sudo ")
+            .unwrap_or(RECOMMENDED_KEY_EXTRACT);
+        assert!(bare.starts_with("wx key extract"));
+        #[cfg(not(target_os = "linux"))]
         assert!(RECOMMENDED_KEY_EXTRACT.contains("--hook-seconds"));
         assert!(!RECOMMENDED_KEY_EXTRACT.contains("init --force"));
-        assert!(RECOMMENDED_KEY_EXTRACT_HINT.contains(RECOMMENDED_KEY_EXTRACT)
-            || RECOMMENDED_KEY_EXTRACT_HINT.starts_with("sudo wx key extract"));
+        assert!(RECOMMENDED_KEY_EXTRACT_HINT.contains(bare));
         assert!(!RECOMMENDED_KEY_EXTRACT_HINT.contains("init --force"));
     }
 }

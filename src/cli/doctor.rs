@@ -3,6 +3,7 @@
 use anyhow::Result;
 use serde_json::json;
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 use crate::config;
@@ -53,10 +54,17 @@ pub fn cmd_doctor(json: bool, fix: bool) -> Result<()> {
         if all_ok {
             println!("\n全部检查通过。");
         } else {
+            let tail = if cfg!(target_os = "macos") {
+                "（本机 GUI Terminal + 等待时打开相关聊天；SIP 无需关闭）"
+            } else if cfg!(target_os = "windows") {
+                "（保持微信运行；等待时打开相关聊天以触发冷分片解密）"
+            } else {
+                "（需有读取微信进程内存的权限）"
+            };
             println!(
-                "\n存在未通过项。补密钥：{}\n\
-                 （本机 GUI Terminal + 等待时打开相关聊天；SIP 无需关闭）",
-                config::RECOMMENDED_KEY_EXTRACT
+                "\n存在未通过项。补密钥：{}\n{}",
+                config::RECOMMENDED_KEY_EXTRACT,
+                tail
             );
         }
     }
@@ -280,19 +288,37 @@ fn run_checks() -> Vec<Check> {
     }
 
     // daemon sock
-    let sock = config::sock_path();
+    let (daemon_ok, daemon_detail) = daemon_status();
     out.push(Check {
         name: "daemon socket".into(),
-        ok: sock.exists(),
-        detail: if sock.exists() {
-            sock.display().to_string()
-        } else {
-            "未运行（首次查询会自动启动）".into()
-        },
+        ok: daemon_ok,
+        detail: daemon_detail,
         fix: Some("wx sessions 或 wx daemon start".into()),
     });
 
     out
+}
+
+/// daemon 是否在监听。Windows 走命名管道（没有 daemon.sock 文件）。
+fn daemon_status() -> (bool, String) {
+    #[cfg(windows)]
+    {
+        const PIPE: &str = r"\\.\pipe\wx-cli-daemon";
+        if std::fs::File::open(PIPE).is_ok() {
+            (true, PIPE.to_string())
+        } else {
+            (false, format!("{PIPE} 未就绪（首次查询会自动启动）"))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let sock = config::sock_path();
+        if sock.exists() {
+            (true, sock.display().to_string())
+        } else {
+            (false, "未运行（首次查询会自动启动）".to_string())
+        }
+    }
 }
 
 fn load_known_entries(keys_path: &Path) -> (usize, Vec<KeyEntry>) {
@@ -339,16 +365,7 @@ fn format_missing_preview(items: &[scanner::MissingDb], max: usize) -> String {
 }
 
 fn find_wechat_pid() -> Option<u32> {
-    let out = Command::new("pgrep").args(["-x", "WeChat"]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()?
-        .trim()
-        .parse()
-        .ok()
+    scanner::find_running_wechat_pids().into_iter().next()
 }
 
 fn read_key_for(keys_path: &Path, rel: &str) -> Option<String> {

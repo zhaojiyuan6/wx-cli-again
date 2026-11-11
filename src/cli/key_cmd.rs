@@ -195,7 +195,7 @@ pub fn cmd_key_set(db_name: &str, enc_key: &str) -> Result<()> {
 
 pub fn cmd_key_extract(hook_seconds: Option<u64>) -> Result<()> {
     println!(
-        "提取密钥（内存扫描 + 可选 LLDB hook；推荐：{}）…",
+        "提取密钥（内存扫描 + 可选 hook；推荐：{}）…",
         config::RECOMMENDED_KEY_EXTRACT
     );
     #[cfg(unix)]

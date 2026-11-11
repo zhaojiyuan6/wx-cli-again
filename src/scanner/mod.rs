@@ -8,6 +8,10 @@ mod linux;
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+mod windows_hook;
+#[cfg(target_os = "windows")]
+mod windows_keyscan;
 
 /// 扫描到的一条密钥记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,10 +32,10 @@ pub fn scan_keys(db_dir: &Path) -> Result<Vec<KeyEntry>> {
     scan_keys_with_options(db_dir, ScanOptions::default())
 }
 
-/// 密钥扫描选项（目前主要影响 macOS LLDB hook）
+/// 密钥扫描选项（影响 macOS LLDB / Windows Frida hook）
 #[derive(Debug, Clone)]
 pub struct ScanOptions<'a> {
-    /// LLDB hook 等待秒数；0 表示禁用 hook
+    /// hook 等待秒数；0 表示禁用 hook
     pub hook_seconds: u64,
     /// 内存扫描未配齐时是否自动进入 hook
     pub auto_hook: bool,
@@ -44,7 +48,9 @@ impl Default for ScanOptions<'static> {
         Self {
             #[cfg(target_os = "macos")]
             hook_seconds: macos::DEFAULT_HOOK_SECONDS,
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            hook_seconds: windows_hook::DEFAULT_HOOK_SECONDS,
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             hook_seconds: 0,
             auto_hook: true,
             known: &[],
@@ -61,14 +67,42 @@ pub fn scan_keys_with_options(db_dir: &Path, opts: ScanOptions<'_>) -> Result<Ve
         return linux::scan_keys(db_dir);
     }
     #[cfg(target_os = "windows")]
-    {
-        let _ = opts;
-        return windows::scan_keys(db_dir);
-    }
+    return windows::scan_keys_with_options(
+        db_dir,
+        opts.hook_seconds,
+        opts.auto_hook,
+        opts.known,
+    );
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = opts;
         anyhow::bail!("当前平台不支持自动密钥扫描")
+    }
+}
+
+/// 当前正在运行的微信进程 PID。
+///
+/// Windows 枚举 `Weixin.exe`（4.x）；macOS/Linux 用 `pgrep -x WeChat`。
+pub fn find_running_wechat_pids() -> Vec<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::find_wechat_pids()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Ok(out) = std::process::Command::new("pgrep")
+            .args(["-x", "WeChat"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !out.status.success() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
     }
 }
 
@@ -419,10 +453,26 @@ pub(crate) fn collect_salt_adjacent_keys(
     }
 }
 
-fn find_slice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+pub(crate) fn find_slice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    // 先按首字节快速跳，再做整段比较：对几百 MB 的进程内存比 naive
+    // `windows().position()` 快一个数量级。
+    let first = needle[0];
+    let mut offset = 0usize;
+    while offset + needle.len() <= haystack.len() {
+        let found = haystack[offset..].iter().position(|&byte| byte == first)?;
+        let start = offset + found;
+        if start + needle.len() > haystack.len() {
+            return None;
+        }
+        if &haystack[start..start + needle.len()] == needle {
+            return Some(start);
+        }
+        offset = start + 1;
+    }
+    None
 }
 
 fn push_raw_key(
